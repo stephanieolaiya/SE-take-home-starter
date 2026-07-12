@@ -431,3 +431,11 @@ Verified: all four repeated-param cases now return `400` instead of a `500` or a
 - Validate that `phase`/`status` also match their actual enum values (`"I" | "II" | "III"` / `"recruiting" | "completed" | "terminated"`) while touching this code anyway. Rejected as scope creep beyond this specific bug, same reasoning as Bug 5's decision not to expand the sortable-field set: an unrecognized-but-well-typed `phase` value (e.g. `phase=IV`) has coherent filter semantics today (zero matches, which is correct — there's no Phase IV in this dataset), so it isn't broken the way array-typed input is. Enum-validating those fields is a reasonable future enhancement, not a fix for a reported defect.
 
 **Tests added:** `src/__tests__/trials.route.test.ts` — five new tests under `GET /trials — repeated (array-valued) query params`: repeated `phase`, `status`, `sponsor`, and `search` each assert `400`; a fifth confirms normal single-value filters (`?phase=III&sponsor=Pathos`) still return `200`. Confirmed via `npm test` (29/29 passing).
+
+---
+
+## Note — TypeScript strict-mode cleanup (not counted as a bug)
+
+Separately from the 10 bugs above, `npx tsc --noEmit` had 11 pre-existing strict-mode errors (untyped `req.params`, an `exactOptionalPropertyTypes` mismatch, `fetch`'s `Response.json()` typing as `unknown`) — invisible to `npm run dev`/`npm test` (both skip type-checking via `tsx`/esbuild), so not runtime bugs, just left out of the numbered list above.
+
+Two decisions worth recording: (1) rather than widening `TrialFilters` to accept `T | undefined` (weakens what the type means, just to satisfy one call site), fixed the actual construction site with a small `omitUndefined()` helper that strips undefined-valued keys before they reach `listTrials`. (2) Rather than asserting `res.json()`'s shape with `as` in tests (an unverified claim — the same risk class as the `as string | undefined` casts fixed in Bug 10), switched to `zod.parse()`, which actually validates the response at runtime instead of just satisfying the compiler.

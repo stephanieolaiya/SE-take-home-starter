@@ -10,6 +10,22 @@ import type { TrialListResponse, ErrorResponse } from "../types.js";
 
 const router = Router();
 
+// zod's `.optional()` fields are typed `T | undefined`, with the key still
+// present when the value is `undefined`. `exactOptionalPropertyTypes` treats
+// "key present with `undefined`" and "key absent" as different things, so
+// this strips the former down to the latter before handing filters off to
+// listTrials — fixing the construction site rather than loosening what
+// TrialFilters is allowed to mean.
+function omitUndefined<T extends Record<string, unknown>>(
+  obj: T
+): { [K in keyof T]?: Exclude<T[K], undefined> } {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) result[key] = value;
+  }
+  return result as { [K in keyof T]?: Exclude<T[K], undefined> };
+}
+
 const analyzeRequestSchema = z.object({
   focus: z.enum(["safety", "efficacy", "competitive"]),
 });
@@ -45,14 +61,14 @@ router.get(
       return;
     }
 
-    const result = listTrials(parsed.data);
+    const result = listTrials(omitUndefined(parsed.data));
 
     res.json(result);
   }
 );
 
-router.get("/:id", (req: Request, res: Response) => {
-  const trial = getTrialById(req.params.id!);
+router.get("/:id", (req: Request<{ id: string }>, res: Response) => {
+  const trial = getTrialById(req.params.id);
   if (!trial) {
     res.status(404).json({ error: "Trial not found" });
     return;
@@ -60,8 +76,8 @@ router.get("/:id", (req: Request, res: Response) => {
   res.json(trial);
 });
 
-router.get("/:id/summary", (req: Request, res: Response) => {
-  const trial = getTrialById(req.params.id!);
+router.get("/:id/summary", (req: Request<{ id: string }>, res: Response) => {
+  const trial = getTrialById(req.params.id);
   if (!trial) {
     res.status(404).json({ error: "Trial not found" });
     return;

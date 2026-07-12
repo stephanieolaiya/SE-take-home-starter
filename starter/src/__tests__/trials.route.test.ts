@@ -1,8 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import express from "express";
+import { z } from "zod";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { trialsRouter } from "../routes/trials.js";
+
+// Parsed (not just asserted) so a mismatch between what the route actually
+// returns and what the test expects fails with a clear zod error at the
+// point of divergence, rather than trusting an unverified `as` cast.
+const errorBodySchema = z.object({ error: z.string() });
+const listBodySchema = z.object({ total: z.number(), trials: z.array(z.unknown()) });
 
 describe("trialsRouter", () => {
   let server: Server;
@@ -26,7 +33,7 @@ describe("trialsRouter", () => {
     it("rejects an unrecognized sort field with 400 instead of silently returning unsorted results", async () => {
       const res = await fetch(`${baseUrl}/trials?sort=bogus`);
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = errorBodySchema.parse(await res.json());
       expect(body.error).toMatch(/sort/i);
     });
 
@@ -38,7 +45,7 @@ describe("trialsRouter", () => {
     it("rejects an invalid order value with 400 instead of silently defaulting to desc", async () => {
       const res = await fetch(`${baseUrl}/trials?order=bogus`);
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = errorBodySchema.parse(await res.json());
       expect(body.error).toMatch(/order/i);
     });
 
@@ -57,21 +64,21 @@ describe("trialsRouter", () => {
     it("rejects a non-numeric minEnrollment with 400 instead of silently ignoring the filter", async () => {
       const res = await fetch(`${baseUrl}/trials?minEnrollment=abc`);
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = errorBodySchema.parse(await res.json());
       expect(body.error).toMatch(/minEnrollment/i);
     });
 
     it("still returns 200 and applies the filter for a valid minEnrollment", async () => {
       const res = await fetch(`${baseUrl}/trials?minEnrollment=99999`);
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = listBodySchema.parse(await res.json());
       expect(body.total).toBe(0);
     });
 
     it("applies the filter (not skips it) for minEnrollment=0", async () => {
       const res = await fetch(`${baseUrl}/trials?minEnrollment=0`);
       expect(res.status).toBe(200);
-      const body = await res.json();
+      const body = listBodySchema.parse(await res.json());
       expect(body.total).toBe(body.trials.length);
     });
   });
@@ -112,7 +119,7 @@ describe("trialsRouter", () => {
       });
 
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = errorBodySchema.parse(await res.json());
       expect(body.error).toMatch(/focus/i);
     });
 
@@ -124,7 +131,7 @@ describe("trialsRouter", () => {
       });
 
       expect(res.status).toBe(400);
-      const body = await res.json();
+      const body = errorBodySchema.parse(await res.json());
       expect(body.error).toMatch(/focus/i);
     });
   });
