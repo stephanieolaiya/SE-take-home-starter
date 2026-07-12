@@ -385,6 +385,7 @@ curl "http://localhost:3000/trials?status=recruiting&status=completed" # → 200
 curl "http://localhost:3000/trials?sponsor=Pathos&sponsor=Merck"       # → 500, TypeError: filters.sponsor.toLowerCase is not a function
 curl "http://localhost:3000/trials?search=melanoma&search=cancer"      # → 500, TypeError: filters.search.toLowerCase is not a function
 ```
+
 Two different failure modes from the same root cause, depending on which field: `phase`/`status` use `===` exact comparison, so an array never equals a string and the filter silently matches nothing; `sponsor`/`search` call `.toLowerCase()` directly on the value, and `Array.prototype` has no such method, so it throws — an unhandled `500` with a leaked stack trace (the same secondary information-disclosure pattern as Bug 6).
 
 **Root cause:** `src/routes/trials.ts`, in the `GET /trials` handler (before this fix): `phase: phase as string | undefined`, `status: status as string | undefined`, `sponsor: sponsor as string | undefined`, `search: search as string | undefined`. Express's actual type for a query value is `string | string[] | ParsedQs | ParsedQs[] | undefined` (`req.query`'s real shape) — the `as string | undefined` cast doesn't check or convert anything, it just tells TypeScript to trust a claim that's false whenever a key is repeated. This is the same class of bug as the `req.params.id` typing gap noted in the TypeScript-strictness pass: an unchecked cast lying about the real runtime shape of external input, one of the "type-safety holes" the assignment specifically calls out. `minEnrollment` had an identical exposure (`Number([...])` coerces an array to `NaN`) until Bug 9's fix already closed it via `zod`; `sort`/`order` were already protected by Bug 5's `zod` schema (a `z.enum()` correctly rejects an array). `phase`, `status`, `sponsor`, and `search` were the remaining fields with no such validation.
@@ -392,6 +393,7 @@ Two different failure modes from the same root cause, depending on which field: 
 **Real-world impact:** This is the most severe of the query-validation gaps found so far — two of the four affected fields don't just return wrong results, they crash the request entirely with a `500` and leak internal file paths in the response body. And unlike a deliberately malicious query, the trigger (`?field=a&field=b`) is what an ordinary multi-select filter control produces by default — a frontend engineer wiring up a "filter by sponsor" multi-select to this API would hit this immediately in normal use, not as an edge case.
 
 **Fix:** `src/routes/trials.ts` — extended the existing `zod` query schema (already validating `sort`/`order`/`minEnrollment`) to cover all four string fields with a plain `z.string().optional()`, which rejects arrays outright, and simplified the handler to validate the whole `req.query` object at once rather than picking fields out individually:
+
 ```diff
   const listTrialsQuerySchema = z.object({
 +   // Express turns repeated query keys (?phase=I&phase=II) into arrays, so every
@@ -406,6 +408,7 @@ Two different failure modes from the same root cause, depending on which field: 
     minEnrollment: z.coerce.number().optional(),
   });
 ```
+
 ```diff
 - const { phase, status, minEnrollment, sponsor, search, sort, order } = req.query;
 - const parsed = listTrialsQuerySchema.safeParse({ sort, order, minEnrollment });
@@ -422,11 +425,13 @@ Two different failure modes from the same root cause, depending on which field: 
 - });
 + const result = listTrials(parsed.data);
 ```
+
 Verified: all four repeated-param cases now return `400` instead of a `500` or a silently-wrong `200`; normal single-value filters (`?phase=III&sponsor=Pathos`, etc.) are unaffected and still return `200` with correct results.
 
 **Why this fix is correct and minimal:** Reuses the exact `zod` pattern already established for `sort`/`order` (Bug 5) and `minEnrollment` (Bug 9) — no new validation approach introduced. Validating the whole `req.query` object in one `safeParse` call (rather than destructuring individual fields first) is also a simplification, not just a fix: `zod`'s default "strip unknown keys" behavior means any query params outside the schema are silently ignored exactly as before, so there's no behavior change for unrelated query params, and the handler body is shorter because `listTrials(parsed.data)` can be passed directly — `parsed.data`'s shape already matches `TrialFilters`.
 
 **Alternatives considered:**
+
 - Keep destructuring individual fields and only add `.optional()` string checks for `sponsor`/`search` (the two that crash), leaving `phase`/`status` as unchecked casts since they "only" produce wrong-but-non-crashing results. Rejected — silently returning zero results for a valid-looking filter request is still a real bug (Bug 5's reasoning applies equally here: a filter that matches nothing looks identical to "no trials matched," which is misleading), and fixing all four with the same one schema is no more code than fixing two.
 - Validate that `phase`/`status` also match their actual enum values (`"I" | "II" | "III"` / `"recruiting" | "completed" | "terminated"`) while touching this code anyway. Rejected as scope creep beyond this specific bug, same reasoning as Bug 5's decision not to expand the sortable-field set: an unrecognized-but-well-typed `phase` value (e.g. `phase=IV`) has coherent filter semantics today (zero matches, which is correct — there's no Phase IV in this dataset), so it isn't broken the way array-typed input is. Enum-validating those fields is a reasonable future enhancement, not a fix for a reported defect.
 
