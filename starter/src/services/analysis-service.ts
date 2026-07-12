@@ -81,7 +81,7 @@ export function getTrialSummary(trial: ClinicalTrial): {
   const summary = [
     `${trial.name} is a Phase ${trial.phase} ${trial.status} trial`,
     `studying ${trial.indication}.`,
-    `Current response rate: ${trial.responseRate!.toFixed(1)}%.`,
+    `Current response rate: ${trial.responseRate !== null ? `${trial.responseRate.toFixed(1)}%` : "not yet available"}.`,
     `Adverse event rate: ${trial.adverseEventRate}%.`,
     `Key findings: ${trial.keyFindings.join("; ")}`,
   ].join(" ");

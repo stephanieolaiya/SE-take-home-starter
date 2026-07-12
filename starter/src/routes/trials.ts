@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
+import { z } from "zod";
 import { listTrials, getTrialById } from "../services/trial-service.js";
 import {
   streamAnalysis,
@@ -9,22 +10,46 @@ import type { TrialListResponse, ErrorResponse } from "../types.js";
 
 const router = Router();
 
-router.get("/", (req: Request, res: Response<TrialListResponse>) => {
-  const { phase, status, minEnrollment, sponsor, search, sort, order } =
-    req.query;
-
-  const result = listTrials({
-    phase: phase as string | undefined,
-    status: status as string | undefined,
-    minEnrollment: minEnrollment ? Number(minEnrollment) : undefined,
-    sponsor: sponsor as string | undefined,
-    search: search as string | undefined,
-    sort: sort as string | undefined,
-    order: order as string | undefined,
-  });
-
-  res.json(result);
+const analyzeRequestSchema = z.object({
+  focus: z.enum(["safety", "efficacy", "competitive"]),
 });
+
+// Only fields with a real case in listTrials's sort switch belong here.
+// Adding a new sortable field is a product/API-surface decision, not a bug fix —
+// don't add to this list without also adding the corresponding case in trial-service.ts.
+const listTrialsQuerySchema = z.object({
+  // Express turns repeated query keys (?phase=I&phase=II) into arrays, so every
+  // field here must reject non-string shapes explicitly — a plain z.string()
+  // does that; without it these silently misbehave or crash downstream.
+  phase: z.string().optional(),
+  status: z.string().optional(),
+  sponsor: z.string().optional(),
+  search: z.string().optional(),
+  // Only fields with a real case in listTrials's sort switch belong here.
+  // Adding a new sortable field is a product/API-surface decision, not a bug fix —
+  // don't add to this list without also adding the corresponding case in trial-service.ts.
+  sort: z.enum(["enrollment", "startDate", "adverseEventRate"]).optional(),
+  order: z.enum(["asc", "desc"]).optional(),
+  minEnrollment: z.coerce.number().optional(),
+});
+
+router.get(
+  "/",
+  (req: Request, res: Response<TrialListResponse | ErrorResponse>) => {
+    const parsed = listTrialsQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({
+        error:
+          "Invalid query parameters: 'phase', 'status', 'sponsor', and 'search' must each be a single string value (not repeated); 'sort' must be one of 'enrollment', 'startDate', 'adverseEventRate'; 'order' must be 'asc' or 'desc'; 'minEnrollment' must be a number",
+      });
+      return;
+    }
+
+    const result = listTrials(parsed.data);
+
+    res.json(result);
+  }
+);
 
 router.get("/:id", (req: Request, res: Response) => {
   const trial = getTrialById(req.params.id!);
@@ -58,10 +83,17 @@ router.post(
       return;
     }
 
-    const { focus } = req.body;
+    const parsed = analyzeRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error:
+          "Invalid request body: 'focus' must be one of 'safety', 'efficacy', 'competitive'",
+      });
+      return;
+    }
 
     try {
-      await streamAnalysis(trial, focus as any, res);
+      await streamAnalysis(trial, parsed.data.focus, res);
     } catch (err) {
       if (!res.headersSent) {
         res.status(500).json({

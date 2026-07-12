@@ -39,7 +39,7 @@ export function listTrials(filters: TrialFilters): {
     results = results.filter((t) => t.status === filters.status);
   }
 
-  if (filters.minEnrollment) {
+  if (filters.minEnrollment !== undefined) {
     results = results.filter((t) => t.enrollment >= filters.minEnrollment!);
   }
 
@@ -56,8 +56,8 @@ export function listTrials(filters: TrialFilters): {
       if (t.name.toLowerCase().includes(query)) score += 3;
       if (t.indication.toLowerCase().includes(query)) score += 2;
       if (t.primaryEndpoint.toLowerCase().includes(query)) score += 1;
-      if (t.keyFindings.includes(query)) score += 2;
-      (t as any)._score = score;
+      if (t.keyFindings.some((f) => f.toLowerCase().includes(query)))
+        score += 2;
       return score > 0;
     });
   }
@@ -73,7 +73,7 @@ export function listTrials(filters: TrialFilters): {
         break;
       case "startDate":
         cmp =
-          new Date(b.startDate).getTime() - new Date(a.startDate).getTime();
+          new Date(a.startDate).getTime() - new Date(b.startDate).getTime();
         break;
       case "adverseEventRate":
         cmp = a.adverseEventRate - b.adverseEventRate;

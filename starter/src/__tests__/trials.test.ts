@@ -38,11 +38,19 @@ describe("trial-service", () => {
       expect(result.trials.length).toBeGreaterThan(0);
     });
 
-    it("sorts by startDate", () => {
+    it("sorts by startDate descending by default (newest first)", () => {
       const result = listTrials({ sort: "startDate" });
       const dates = result.trials.map((t) => new Date(t.startDate).getTime());
       for (let i = 1; i < dates.length; i++) {
         expect(dates[i]! <= dates[i - 1]!).toBe(true);
+      }
+    });
+
+    it("sorts by startDate ascending when order=asc (oldest first)", () => {
+      const result = listTrials({ sort: "startDate", order: "asc" });
+      const dates = result.trials.map((t) => new Date(t.startDate).getTime());
+      for (let i = 1; i < dates.length; i++) {
+        expect(dates[i]! >= dates[i - 1]!).toBe(true);
       }
     });
 
@@ -52,6 +60,27 @@ describe("trial-service", () => {
       for (let i = 1; i < enrollments.length; i++) {
         expect(enrollments[i]! >= enrollments[i - 1]!).toBe(true);
       }
+    });
+
+    it("matches a search term that only appears inside keyFindings text", () => {
+      // "PSA50" appears only in NCT-001/NCT-007's keyFindings sentences, not in
+      // their name, indication, or primaryEndpoint fields.
+      const result = listTrials({ search: "psa50" });
+      const ids = result.trials.map((t) => t.id);
+      expect(ids).toContain("NCT-001");
+      expect(ids).toContain("NCT-007");
+    });
+
+    it("still matches search terms found in name/indication (regression check)", () => {
+      const result = listTrials({ search: "melanoma" });
+      expect(result.trials.map((t) => t.id)).toContain("NCT-002");
+    });
+
+    it("does not mutate shared trial objects when searching", () => {
+      listTrials({ search: "AURORA" });
+      const trial = getTrialById("NCT-001");
+      expect(trial).not.toHaveProperty("_score");
+      expect(JSON.stringify(trial)).not.toContain("_score");
     });
   });
 });
