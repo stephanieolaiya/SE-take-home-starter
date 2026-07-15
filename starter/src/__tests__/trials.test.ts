@@ -38,7 +38,7 @@ describe("trial-service", () => {
       expect(result.trials.length).toBeGreaterThan(0);
     });
 
-    it("sorts by startDate descending by default (newest first)", () => {
+    it("sorts by startDate", () => {
       const result = listTrials({ sort: "startDate" });
       const dates = result.trials.map((t) => new Date(t.startDate).getTime());
       for (let i = 1; i < dates.length; i++) {

@@ -49,21 +49,46 @@ export async function streamAnalysis(
 ): Promise<void> {
   const prompt = buildPrompt(trial, focus);
 
-  response.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-
+  // streamText never throws for provider/auth errors, by design ("errors
+  // become part of the stream and are not thrown to prevent servers from
+  // crashing" per the AI SDK docs). onError is the only way to observe
+  // them; without it, an invalid key or a mid-stream failure completes
+  // silently with zero chunks and no exception.
+  let streamError: unknown = null;
   const result = streamText({
     model: openai("gpt-4o-mini"),
     prompt,
+    onError: ({ error }) => {
+      streamError = error;
+    },
   });
 
   const reader = result.textStream;
+  let headersSent = false;
 
   for await (const chunk of reader) {
+    if (!headersSent) {
+      response.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      });
+      headersSent = true;
+    }
     response.write(`data: ${JSON.stringify({ text: chunk })}\n\n`);
+  }
+
+  if (streamError) {
+    const message =
+      streamError instanceof Error ? streamError.message : "Analysis failed";
+    if (!headersSent) {
+      // Nothing sent yet, so throw and let the route's existing catch
+      // block send a real 500 instead of a fake 200.
+      throw new Error(message);
+    }
+    // Already committed to 200, the status can't change now, but the
+    // client gets an explicit error instead of a silently truncated stream.
+    response.write(`data: ${JSON.stringify({ error: message })}\n\n`);
   }
 
   response.write("data: [DONE]\n\n");

@@ -24,8 +24,6 @@ Option A's failure surface is smaller and simpler: one process, one datastore. O
 
 Correctness in Option B depends on a longer chain of things being true at once. Option A works if the one process is running and the database is up. Option B works only if the API is running, the worker is running, both can reach the database, and the on-demand trigger correctly started the worker when the batch was enqueued. A break in any one link, especially the trigger, can leave a batch silently unprocessed while every individual component reports healthy.
 
-The on-demand trigger specifically is new coordination logic with no equivalent in Option A. Something has to decide when to start the worker and when to stop it. That is real logic to build and test, and a new source of bugs: a batch enqueued right as the previous worker is shutting down could get missed if the start and stop handoff is not handled carefully.
-
 The extra complexity buys headroom this workload does not need. Option A's roughly 5 concurrent calls clear a full 500 trial batch in under an hour. For something run 2 to 3 times a week, that is already fine. Option B buys faster completion and independent scaling, but not because this workload is asking for it yet.
 
 This is the real cost of choosing Option B: a new operational dependency and new coordination logic that this workload's current scale does not strictly require.
@@ -34,7 +32,7 @@ This is the real cost of choosing Option B: a new operational dependency and new
 
 - If trial count stayed closer to its current size, well under 500, rather than growing toward it, Option A's five concurrent calls would already be sufficient, and Option B's coordination overhead would not be worth taking on at all.
 - If the infrastructure budget shrank further, the added cost of running a second deployment would be harder to justify.
-- If retry requirements grew complex enough that a queue library's built-in attempts and backoff could not express them, for example different backoff per error type, or retries that depend on the outcome of other jobs, custom retry logic would need to be written on top of Option B anyway. That would erode its main advantage over Option A.
+- If retry requirements grew complex enough that a queue library's built-in attempts and backoff could not express them, for example different backoff per error type, or retries that depend on the outcome of other jobs, custom retry logic would need to be written on top of Option B anyway. That would erode part of its built-in-functionality advantage over Option A, though atomic job claiming and stalled-job detection would remain unaffected.
 
 ## Queue technology: pg-boss now, Redis and BullMQ as an upgrade path
 
@@ -42,11 +40,11 @@ Within Option B, choose **pg-boss**, using the same Postgres this app already ne
 
 The reasoning is scale-specific, not a rejection of Redis and BullMQ on technical merit. Redis and BullMQ are generally the right tool for larger, higher-throughput workloads: they offer a true time-window rate limiter, push-based progress updates over Pub/Sub instead of polling, and isolate queue traffic from the primary database entirely. Those are real advantages. But they come with a genuinely new piece of infrastructure to provision, secure, and keep durable, and at this workload's scale (500 trials, a few batches a week) none of those advantages are load-bearing. pg-boss gets equivalent correctness (atomic job claiming, retry with backoff, stalled-job detection) from the database this system needs regardless of which queue technology is chosen.
 
-Revisit this choice if job volume or batch frequency grows enough that concurrency alone can no longer approximate the OpenAI rate limit safely, if the UI requires genuinely push-based progress rather than a short polling interval, or if queue activity starts measurably competing with live traffic for database resources.
+The choice can be revisited if job volume or batch frequency grows enough that concurrency alone can no longer approximate the OpenAI rate limit safely, if the UI requires genuinely push-based progress rather than a short polling interval, or if queue activity starts measurably competing with live traffic for database resources.
 
 ## Implementation plan
 
-**First: prove the plumbing end to end with a minimal skeleton.** Wire up pg-boss against the existing Postgres. Create the results table and a batch-tracking table for progress. Build a minimal, separate worker entrypoint with a stub job handler that writes a placeholder result. Add `POST /batch/analyze`, enqueueing one job per trial and returning a batch ID, and confirm the worker actually picks jobs up and completes them end to end. This validates the riskiest new piece, the queue and worker split actually working, before any real analysis logic is built on top of it.
+**First: prove the plumbing end to end with a minimal skeleton.** Wire up external queue (pg-boss against the existing Postgres). Create the results table and a batch-tracking table for progress. Build a minimal, separate worker entrypoint with a stub job handler that writes a placeholder result. Add `POST /batch/analyze`, enqueueing one job per trial and returning a batch ID, and confirm the worker actually picks jobs up and completes them end to end. This validates the riskiest new piece, the queue and worker split actually working, before any real analysis logic is built on top of it.
 
 **Second: configure concurrency and retry limits, and prove them against the stub.** Set concurrency limits and retry attempts and backoff as job options. Extend the stub handler from the first step to deliberately fail some jobs, so retry and backoff behavior can be verified before any real, billed OpenAI call is possible. This puts the safety rails in place while mistakes are still free, rather than configuring them after real spending is already possible.
 
