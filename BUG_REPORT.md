@@ -69,7 +69,7 @@ Both returned `200 OK` and a full streamed AI analysis, instead of rejecting the
 
 **Real-world impact:** Every malformed or missing `focus` silently consumes a real OpenAI API call which has a cost and returns a `200` with an analysis built from a corrupted prompt containing the literal text `"undefined"`. The client has no way to know the request was invalid. A frontend with a typo in a focus value, or an old client sending a since-removed focus option, would fail silently in production with no error to alert anyone.
 
-**Fix:** `src/routes/trials.ts`: `zod` was already a `package.json` dependency (`starter/package.json:18`) so I added a `zod` schema and validated `req.body` before calling `streamAnalysis`, returning `400` with a descriptive error on failure:
+**Fix:** `src/routes/trials.ts:29-31` (schema) and `src/routes/trials.ts:102-112` (validation + usage): `zod` was already a `package.json` dependency (`starter/package.json:18`) so I added a `zod` schema and validated `req.body` before calling `streamAnalysis`, returning `400` with a descriptive error on failure:
 
 ```diff
 + import { z } from "zod";
@@ -148,7 +148,7 @@ Verified directly: `listTrials({ sort: "startDate" })` now returns newest-first 
 
 **Real-world impact:** Same silent-degradation shape as Bugs 1 and 3: a caller passing any unsupported `sort` (or a typo'd `order`) gets back a well-formed, plausible-looking `200` response that silently isn't sorted the way they asked returning inaccurate results.
 
-**Fix:** `src/routes/trials.ts`: added a `zod` schema validating `sort` against exactly the fields that have a real case in `trial-service.ts`'s switch, and `order` against `"asc" | "desc"`, returning `400` for anything else:
+**Fix:** `src/routes/trials.ts:47-48` (schema fields) and `src/routes/trials.ts:55` (validation call): added a `zod` schema validating `sort` against exactly the fields that have a real case in `trial-service.ts`'s switch, and `order` against `"asc" | "desc"`, returning `400` for anything else:
 
 ```ts
 // Only fields with a real case in listTrials's sort switch belong here.
@@ -262,7 +262,7 @@ An entirely unrelated `GET /trials/:id` request picked up a field that only ever
 
 **Real-world impact:** This is a straightforward information leak and a correctness bug at once. It leaks internal implementation details (an unstable, request-dependent relevance score) into the public API response shape for an endpoint (`GET /trials/:id`) that has nothing to do with search. Worse, the leaked value is stale and misleading outside the request that produced it: `_score` reflects whatever the *last* search happened to compute for that trial, not anything meaningful to the current request. In a real production system, mutating shared cached/singleton state from inside a request handler is a source of hard-to-reproduce bugs because the behavior of one request silently depends on what some earlier, unrelated request happened to do.
 
-**Fix:** `src/services/trial-service.ts`: removed the mutation entirely:
+**Fix:** `src/services/trial-service.ts:52-61` (the mutation used to sit between what are now lines 60 and 61): removed the mutation entirely:
 
 ```diff
       if (t.keyFindings.some((f) => f.toLowerCase().includes(query)))
@@ -304,7 +304,7 @@ The same truthy check also means `minEnrollment=0` gets silently skipped (`if (0
 
 **Real-world impact:** A client (or a UI form) that sends a malformed or empty `minEnrollment` value gets back an unfiltered `200` response with no indication their filter didn't apply. For a threshold filter specifically, this is worse than it sounds: the caller has no way to distinguish "no trials met your threshold" from "your threshold was silently ignored", both look identical (a full or partial list with no error).
 
-**Fix:** `src/routes/trials.ts`: added `minEnrollment` to the existing `zod` query schema (already validating `sort`/`order` from Bug 5), using `z.coerce.number()` so it's parsed and validated in one step:
+**Fix:** `src/routes/trials.ts:49` (schema field) and `src/routes/trials.ts:55` (validation call): added `minEnrollment` to the existing `zod` query schema (already validating `sort`/`order` from Bug 5), using `z.coerce.number()` so it's parsed and validated in one step:
 
 ```diff
   const listTrialsQuerySchema = z.object({
@@ -360,7 +360,7 @@ Two different failure modes from the same root cause, depending on which field: 
 
 **Real-world impact:** Two of the four affected fields don't just return wrong results, they crash the request entirely with a `500` and leak internal file paths in the response body. And unlike a deliberately malicious query, the trigger (`?field=a&field=b`) is what an ordinary multi-select filter control produces by default. A frontend engineer wiring up a "filter by sponsor" multi-select to this API would hit this immediately in normal use.
 
-**Fix:** `src/routes/trials.ts`: extended the existing `zod` query schema (already validating `sort`/`order`/`minEnrollment`) to cover all four string fields with a plain `z.string().optional()`, which rejects arrays outright, and simplified the handler to validate the whole `req.query` object at once rather than picking fields out individually:
+**Fix:** `src/routes/trials.ts:40-43` (schema fields) and `src/routes/trials.ts:55` (validation call): extended the existing `zod` query schema (already validating `sort`/`order`/`minEnrollment`) to cover all four string fields with a plain `z.string().optional()`, which rejects arrays outright, and simplified the handler to validate the whole `req.query` object at once rather than picking fields out individually:
 
 ```diff
   const listTrialsQuerySchema = z.object({
@@ -415,7 +415,7 @@ Verified: all four repeated-param cases now return `400` instead of a `500` or a
 
 **Real-world impact:** Any failure during an analyze call, not just a missing API key, an OpenAI outage, a rate limit, a transient network error, still returns a `200` with an empty or truncated stream and no error surfaced anywhere. An analyst sees a blank result with no indication whether the trial genuinely had nothing to say or the integration silently failed. This is the same failure class Bug 1 fixed, just reachable by a different, still-live trigger.
 
-**Fix:** `src/services/analysis-service.ts`: pass an `onError` callback to `streamText()` to capture the error, and defer `writeHead` until the first real chunk arrives instead of firing it unconditionally up front:
+**Fix:** `src/services/analysis-service.ts:57-91`: pass an `onError` callback to `streamText()` to capture the error, and defer `writeHead` until the first real chunk arrives instead of firing it unconditionally up front:
 
 ```diff
 + let streamError: unknown = null;
@@ -456,6 +456,7 @@ Verified directly: an invalid key now throws `"Incorrect API key provided..."` w
 **Alternatives considered:**
 
 - Only handle the pre-stream case (throw when `!headersSent`) and skip the mid-stream error event, to keep the file changes smaller. Rejected: once `onError` is wired up at all, it fires uniformly regardless of timing, so handling only one branch would mean checking `streamError` after the loop but silently ignoring it whenever headers were already sent. That's not smaller in a meaningful way; it's the same check with half the outcome thrown away.
+- Keep `writeHead(200, ...)` unconditional, as before, and communicate every failure, pre-stream or mid-stream, purely through an SSE `data: {"error": ...}` event, never returning an HTTP `500`. This is arguably the more "pure SSE" approach: the connection itself always opens successfully, and no `headersSent` bookkeeping is needed at all. Not chosen: the route's catch block already had an `if (!res.headersSent) res.status(500)...` branch written and ready, which only makes sense if the original author intended early failures to produce a clean `500`. Deferring `writeHead` until the first real chunk makes that existing branch reachable instead of leaving it dead, rather than replacing it with a different contract. Either approach is defensible; this one was chosen to match what the surrounding code was already set up to expect.
 
 **Tests added:** `src/__tests__/analysis-service.test.ts`: `streamText` mocked via `vi.mock("ai")` to simulate three scenarios: a normal successful stream (chunks written in order, `writeHead` called once, `end` called), a pre-stream failure via `onError` with zero chunks yielded (asserts the call rejects, and `writeHead` is never called), and a mid-stream failure via `onError` after one chunk (asserts no rejection, an explicit error event is written, and the stream still ends with `[DONE]`). Confirmed via `npm test`.
 
